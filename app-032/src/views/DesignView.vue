@@ -270,7 +270,7 @@ function onCtrl(v: { which: 1 | 2; x: number; y: number }) {
             <th>层</th>
             <th>分段高 (mm)</th>
             <th>该层直径 (mm)</th>
-            <th>配色</th>
+            <th>第 1 格颜色（圆周分格到「蒙面裁片」页改）</th>
           </tr>
         </thead>
         <tbody>
@@ -279,12 +279,17 @@ function onCtrl(v: { which: 1 | 2; x: number; y: number }) {
             <td><input :value="ly.heightMm" type="number" min="10" step="1" @change="onLayerHeight(i, $event)" /></td>
             <td class="mono">{{ ly.diameterMm.toFixed(1) }}</td>
             <td>
-              <input v-model="lantern.layerColors[i]" type="color" />
+              <span class="cellswatch" :style="{ background: lantern.layerColors[i] || lantern.color }" />
+              <span class="mono">{{ lantern.layerColors[i] || lantern.color }}</span>
+              <router-link class="goto" :to="`/panels/${lantern.id}`">去分格配色 →</router-link>
             </td>
           </tr>
         </tbody>
       </table>
-      <small class="hint">分段高之和 = 总高 {{ lantern.totalHeightMm }}mm；直径由收口曲线自动推算。</small>
+      <small class="hint">
+        分段高之和 = 总高 {{ lantern.totalHeightMm }}mm；直径由收口曲线自动推算。每层可在「蒙面裁片」页沿圆周分成多格，
+        每格各挑颜色与块数（一块一色 / 按角度均分 / 几块一组）。
+      </small>
 
       <h3>批量制灯</h3>
       <div class="row">
@@ -522,6 +527,27 @@ small {
 
 .mono {
   font-family: var(--mono);
+}
+
+.cellswatch {
+  display: inline-block;
+  width: 22px;
+  height: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.goto {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.goto:hover {
+  text-decoration: underline;
 }
 
 .reverse {

@@ -13,10 +13,13 @@ import {
   TAU,
   type Geometry
 } from './geometry'
+import { buildCellResolution, layerPrimaryColor, type CellResolution } from './cells'
 
 export interface PanelResult {
   geometry: Geometry
   panels: Panel[]
+  /** 分层分格权威结果（裁片、图纸、备料、导出共用同一份） */
+  cells: CellResolution
   /** 净面积合计（不含缝份，mm²） */
   netAreaMm2: number
   /** 裁片面积合计（含缝份，mm²） */
@@ -75,6 +78,7 @@ export function buildPanels(l: Lantern): PanelResult {
   const g = buildGeometry(l)
   const s = Math.max(0, l.seamAllowanceMm)
   const panels: Panel[] = []
+  const cells = buildCellResolution(l)
   let seq = 0
   const push = (p: Omit<Panel, 'id'>) => {
     panels.push({ ...p, id: `P${String(++seq).padStart(3, '0')}` })
@@ -103,17 +107,21 @@ export function buildPanels(l: Lantern): PanelResult {
       marksMm: marks,
       qty: info.faceCount,
       layerIndex: -1,
+      cellIndex: -1,
+      cellMode: 'whole',
+      pieceFrom: 1,
+      pieceTo: info.faceCount,
+      layerPieceCount: info.faceCount,
       color: l.layerColors[0] || l.color,
-      note: `棱长 ${r1(info.edgeMm)}mm，三边各加 ${s}mm 缝份`
+      note: `棱长 ${r1(info.edgeMm)}mm，三边各加 ${s}mm 缝份；多面体为整体蒙面、不按圆周分格`
     })
-    return finish(g, panels)
+    return finish(g, panels, cells)
   }
 
   const segs = segmentInfos(g)
   const divisions = Math.max(3, Math.round(l.divisions))
 
   segs.forEach((sg, i) => {
-    const color = l.layerColors[i] || l.color
     const isPolygon = g.polygon
     const rawBottom = isPolygon ? sg.edgeBottomMm : (TAU * sg.r0Mm) / divisions
     const rawTop = isPolygon ? sg.edgeTopMm : (TAU * sg.r1Mm) / divisions
@@ -121,29 +129,51 @@ export function buildPanels(l: Lantern): PanelResult {
     const cutW = Math.max(rawTop, rawBottom) + 2 * s
     const cutH = rawH + 2 * s
     const shape: PanelShape = Math.abs(rawTop - rawBottom) < 0.05 ? 'rectangle' : 'trapezoid'
-    push({
-      shape,
-      label: isPolygon ? `侧面（第 ${i + 1} 层）` : `展开片（第 ${i + 1} 层）`,
-      rawWidthTopMm: r1(rawTop),
-      rawWidthBottomMm: r1(rawBottom),
-      rawHeightMm: r1(rawH),
-      widthTopMm: r1(rawTop + 2 * s),
-      widthBottomMm: r1(rawBottom + 2 * s),
-      heightMm: r1(cutH),
-      seamAllowanceMm: s,
-      marksMm: trapezoidMarks(cutW, cutH, s, `${i + 1}层`),
-      qty: isPolygon ? g.n : divisions,
-      layerIndex: i,
-      color,
-      note: isPolygon
-        ? `上下边各加 ${s}mm 缝份，${g.n} 块围成一圈`
-        : `按 ${divisions} 等分近似展开，每块上下边各加 ${s}mm 缝份`
+    const layerN = isPolygon ? g.n : divisions
+    const layerRes = cells.layers[i]
+    const shapeNameCn = isPolygon ? '侧面' : '展开片'
+    // 每一格出一条裁片记录（数量 = 该格块数，颜色 = 该格颜色），同层各格尺寸完全相同
+    layerRes.cells.forEach((cell) => {
+      if (cell.pieces <= 0) return
+      push({
+        shape,
+        label: `${shapeNameCn}（第 ${i + 1} 层 · 第 ${cell.index + 1}/${layerRes.cells.length} 格）`,
+        rawWidthTopMm: r1(rawTop),
+        rawWidthBottomMm: r1(rawBottom),
+        rawHeightMm: r1(rawH),
+        widthTopMm: r1(rawTop + 2 * s),
+        widthBottomMm: r1(rawBottom + 2 * s),
+        heightMm: r1(cutH),
+        seamAllowanceMm: s,
+        marksMm: trapezoidMarks(cutW, cutH, s, `${i + 1}层${cell.index + 1}格`),
+        qty: cell.pieces,
+        layerIndex: i,
+        cellIndex: cell.index,
+        cellMode: layerRes.mode,
+        pieceFrom: cell.pieceFrom,
+        pieceTo: cell.pieceTo,
+        layerPieceCount: layerN,
+        color: cell.color,
+        note:
+          (isPolygon
+            ? `上下边各加 ${s}mm 缝份，${g.n} 块围成一圈；`
+            : `按 ${divisions} 等分近似展开，每块上下边各加 ${s}mm 缝份；`) +
+          `第 ${i + 1} 层圆周分 ${layerRes.cells.length} 格，本格为第 ${cell.index + 1} 格、含第 ${cell.pieceFrom}–${cell.pieceTo} 块（共 ${cell.pieces} 块），颜色 ${cell.color}，占圆周 ${cell.angleDeg.toFixed(2)}°`
+      })
     })
   })
 
-  // 顶盖 / 底盖
+  // 顶盖 / 底盖（顶底盖不分格：颜色取该层第 1 格色，原因在清单里写明）
   const topR = g.sections[g.sections.length - 1].radiusMm
   const botR = g.sections[0].radiusMm
+  const coverBase = {
+    layerIndex: -1,
+    cellIndex: -1,
+    cellMode: 'whole' as const,
+    pieceFrom: 1,
+    pieceTo: 1,
+    layerPieceCount: 1
+  }
   const coverPanel = (r: number, label: string, tag: string, color: string) => {
     if (g.polygon) {
       const apothem = r * Math.cos(Math.PI / g.n)
@@ -173,9 +203,9 @@ export function buildPanels(l: Lantern): PanelResult {
         qty: 1,
         radiusMm: r1(r),
         polySides: g.n,
-        layerIndex: -1,
+        ...coverBase,
         color,
-        note: `正 ${g.n} 边形裁片，对边距 ${r1(rawW)}mm，四周各加 ${s}mm 折边`
+        note: `正 ${g.n} 边形裁片，对边距 ${r1(rawW)}mm，四周各加 ${s}mm 折边；顶/底盖不按圆周分格，取相邻层第 1 格颜色 ${color}`
       })
     } else {
       const cutD = 2 * r + 2 * s
@@ -199,19 +229,19 @@ export function buildPanels(l: Lantern): PanelResult {
         marksMm: marks,
         qty: 1,
         radiusMm: r1(r),
-        layerIndex: -1,
+        ...coverBase,
         color,
-        note: `圆形裁片，净直径 ${r1(2 * r)}mm，含折边（四周各 ${s}mm）`
+        note: `圆形裁片，净直径 ${r1(2 * r)}mm，含折边（四周各 ${s}mm）；顶/底盖不按圆周分格，取相邻层第 1 格颜色 ${color}`
       })
     }
   }
-  coverPanel(topR, '顶盖圆片', '顶盖', l.layerColors[l.layerColors.length - 1] || l.color)
-  coverPanel(botR, '底盖圆片', '底盘', l.layerColors[0] || l.color)
+  coverPanel(topR, '顶盖圆片', '顶盖', layerPrimaryColor(l, segs.length - 1))
+  coverPanel(botR, '底盖圆片', '底盘', layerPrimaryColor(l, 0))
 
-  return finish(g, panels)
+  return finish(g, panels, cells)
 }
 
-function finish(geometry: Geometry, panels: Panel[]): PanelResult {
+function finish(geometry: Geometry, panels: Panel[], cells: CellResolution): PanelResult {
   let net = 0
   let cut = 0
   let qty = 0
@@ -220,7 +250,7 @@ function finish(geometry: Geometry, panels: Panel[]): PanelResult {
     cut += panelCutArea(p) * p.qty
     qty += p.qty
   }
-  return { geometry, panels, netAreaMm2: net, cutAreaMm2: cut, totalQty: qty }
+  return { geometry, panels, cells, netAreaMm2: net, cutAreaMm2: cut, totalQty: qty }
 }
 
 /** 顶/底盖净面积（用于面积核对，与裁片公式独立来源） */

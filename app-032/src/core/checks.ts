@@ -5,8 +5,8 @@
 import type { CheckResult, Lantern } from './types'
 import { bodySurfaceArea, polygonEdge, ringPerimeter, segmentInfos } from './geometry'
 import { buildFrame, type FrameResult } from './frame'
-import { buildPanels, panelNetArea, type PanelResult } from './panels'
-import { computeBatch, computeMaterials, type BatchMaterials, type SingleLightMaterials } from './materials'
+import { buildPanels, panelNetArea, panelCutArea, type PanelResult } from './panels'
+import { cellFabricRows, cellFabricTotals, computeBatch, computeMaterials, type BatchMaterials, type SingleLightMaterials } from './materials'
 import { assertNoPanelSplit, paginate, type LoftOptions, type Sheet } from './paginate'
 import { CRAFT } from './craft'
 
@@ -179,6 +179,9 @@ function runChecks(
     })
   }
 
+  // ---- CHK-09 圆周分格单一来源一致性 ----
+  out.push(checkCellsConsistency(l, panels))
+
   // ---- CHK-08 性能 ----
   {
     const pass = elapsedMs < 100
@@ -192,6 +195,114 @@ function runChecks(
   }
 
   return out
+}
+
+/**
+ * CHK-09 圆周分格一致性：裁片页每格块数与颜色、裁片图填色（同 Panel.color）、
+ * 备料/批量按格蒙面面积、导出三单的裁片清单与配色清单、本机存档 layerCells，
+ * 必须出自同一份分格（buildCellResolution 的结果）。任一处对不上要点明处所。
+ */
+function checkCellsConsistency(l: Lantern, panels: PanelResult): CheckResult {
+  const problems: string[] = []
+  const resolution = panels.cells
+
+  // 1) 存档本身：每层各格块数合计 = 该层裁片总数；格数 ≤ 块数；不得有空层空格
+  resolution.layers.forEach((r) => {
+    if (!r.segmentable) return
+    const sum = r.cells.reduce((a, c) => a + c.pieces, 0)
+    if (sum !== r.pieceCount) {
+      problems.push(`本机存档第 ${r.layerIndex + 1} 层分格：各格块数合计 ${sum} ≠ 裁片总数 ${r.pieceCount}`)
+    }
+    if (r.cells.length > r.pieceCount) {
+      problems.push(`本机存档第 ${r.layerIndex + 1} 层：格数 ${r.cells.length} 超过块数 ${r.pieceCount}`)
+    }
+    r.cells.forEach((c) => {
+      if (c.pieces <= 0) problems.push(`本机存档第 ${r.layerIndex + 1} 层第 ${c.index + 1} 格：一块都没分到，不能空着`)
+    })
+  })
+
+  // 2) 裁片清单（Panel[]）：逐格回算，块数/颜色/块号必须与权威分格一致
+  const bodyPanels = panels.panels.filter((p) => p.layerIndex >= 0)
+  resolution.layers.forEach((r) => {
+    if (!r.segmentable) return
+    const ps = bodyPanels.filter((p) => p.layerIndex === r.layerIndex)
+    r.cells.forEach((c) => {
+      const p = ps.find((x) => x.cellIndex === c.index)
+      if (!p) {
+        problems.push(`裁片清单：缺第 ${r.layerIndex + 1} 层第 ${c.index + 1} 格`)
+        return
+      }
+      if (p.qty !== c.pieces) {
+        problems.push(
+          `裁片清单第 ${r.layerIndex + 1} 层第 ${c.index + 1} 格：块数 ${p.qty} 与蒙面裁片页该格 ${c.pieces} 对不上（处所：裁片清单）`
+        )
+      }
+      if (p.color.toUpperCase() !== c.color.toUpperCase()) {
+        problems.push(
+          `颜色 ${c.color} 对不上：第 ${r.layerIndex + 1} 层第 ${c.index + 1} 格裁片清单/裁片图填的是 ${p.color}，蒙面裁片页分格是 ${c.color}（处所：裁片图填色）`
+        )
+      }
+      if (p.pieceFrom !== c.pieceFrom || p.pieceTo !== c.pieceTo) {
+        problems.push(
+          `裁片清单第 ${r.layerIndex + 1} 层第 ${c.index + 1} 格：块号 ${p.pieceFrom}-${p.pieceTo} 与分格基准 ${c.pieceFrom}-${c.pieceTo} 对不上`
+        )
+      }
+    })
+    if (ps.length !== r.cells.length) {
+      problems.push(`裁片清单第 ${r.layerIndex + 1} 层：行数 ${ps.length} 与分格格数 ${r.cells.length} 对不上`)
+    }
+  })
+
+  // 3) 备料按格面积：各格块数/颜色与裁片一致；各格面积合计 = 蒙面总量（容差含展示精度）
+  const rows = cellFabricRows(panels)
+  const allPanels = panels.panels
+  rows.forEach((row, ri) => {
+    const p = allPanels[ri]
+    if (!p) {
+      problems.push(`备料按格蒙面面积：找不到「${row.label}」对应的裁片`)
+      return
+    }
+    if (p.qty !== row.pieces) {
+      problems.push(`备料「${row.label}」块数 ${row.pieces} 与裁片清单 ${p.qty} 对不上（处所：备料按格蒙面面积）`)
+    }
+    if (p.color.toUpperCase() !== row.color.toUpperCase()) {
+      problems.push(
+        `颜色 ${row.color} 对不上：备料「${row.label}」为 ${row.color}，裁片清单/裁片图为 ${p.color}（处所：备料按格蒙面面积）`
+      )
+    }
+    const expectCut = Math.round((panelCutArea(p) * p.qty) / 1e6 * 1000) / 1000
+    if (Math.abs(expectCut - row.cutAreaM2) > 0.002) {
+      problems.push(`备料「${row.label}」蒙面面积 ${row.cutAreaM2.toFixed(3)}m² 与裁片算得 ${expectCut.toFixed(3)}m² 对不上（处所：备料按格蒙面面积）`)
+    }
+  })
+  // 合计必须由未舍入 mm² 累加后折三位（与蒙面总量同一口径），避免逐格舍入漂移
+  const cellCutSum = cellFabricTotals(rows).cutM2
+  const totalCut = Math.round((panels.cutAreaMm2 / 1e6) * 1000) / 1000
+  if (Math.abs(cellCutSum - totalCut) > 0.001) {
+    problems.push(`备料各格蒙面面积合计 ${cellCutSum.toFixed(3)}m² 与蒙面总量 ${totalCut.toFixed(3)}m² 对不上（处所：备料按格蒙面面积）`)
+  }
+
+  // 4) 导出三单与图纸共用 PanelResult（同一次 computeAll 生成）——这里核对存档版本与导出戳
+  if (typeof l.exportedRevision === 'number' && l.exportedRevision > l.cellsRevision) {
+    problems.push(`导出戳第 ${l.exportedRevision} 版比存档第 ${l.cellsRevision} 版还新，数据异常`)
+  }
+
+  // 5) 不分格的层（多面体/顶底盖）必须写明原因，不能空着
+  resolution.layers.forEach((r) => {
+    if (!r.segmentable && !r.reason) problems.push(`第 ${r.layerIndex + 1} 层未分格但未写明原因`)
+  })
+
+  const totalCells = resolution.layers.reduce((a, r) => a + r.cells.length, 0)
+  return {
+    id: 'CHK-09',
+    title: '圆周分格单一来源：存档·裁片页·裁片图·备料·导出三单同一套分格',
+    pass: problems.length === 0,
+    value: problems.length === 0 ? `共 ${resolution.layers.length} 层 / ${totalCells} 格，各处一致` : `${problems.length} 处对不上`,
+    detail:
+      problems.length === 0
+        ? `蒙面裁片页每格块数与颜色、裁片图每块填色、备料与批量按格蒙面面积、裁片清单/配色清单每一行、本机存档分格，全部由同一份分格算出；各格块数加总守恒，版本第 ${l.cellsRevision} 版`
+        : problems.join('；')
+  }
 }
 
 function suggestDivisions(l: Lantern, netArea: number, ratio: number): number | null {

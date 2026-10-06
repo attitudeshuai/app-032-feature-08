@@ -127,6 +127,15 @@ function panelBox(it: SheetItemPanel) {
 
 const isPlainCircle = (p: Panel) => p.shape === 'circle' && !p.polySides
 
+/** 该格颜色（裁片图填色与裁片清单/配色清单同源） */
+function cellFill(p: Panel, alpha: number): string {
+  const hex = (p.color || '#b3241f').replace('#', '')
+  const r = parseInt(hex.slice(0, 2), 16) || 0
+  const g = parseInt(hex.slice(2, 4), 16) || 0
+  const b = parseInt(hex.slice(4, 6), 16) || 0
+  return `rgba(${r},${g},${b},${alpha})`
+}
+
 function polygonPoints(n: number, circR: number, cx: number, cy: number): string {
   return Array.from({ length: n }, (_, k) => {
     const a = -Math.PI / 2 + (2 * Math.PI * k) / n
@@ -260,6 +269,11 @@ function today(): string {
         {{ opts.paper }}，页边距选「无」；打印后先用第 1 页的 100mm 校验尺核对，误差应 ≤ 1mm。
       </p>
 
+      <p v-if="lantern.exportedRevision && lantern.exportedRevision < lantern.cellsRevision" class="warn">
+        ⚠ 本图纸分格版本（第 {{ lantern.cellsRevision }} 版）比已导出的单子（第 {{ lantern.exportedRevision }} 版）新：
+        旧裁片清单/配色清单/备料单与旧图纸均已作废，请重新导出并重新出图，已照旧配色裁好的布块需重裁。
+      </p>
+
       <section v-if="mode === 'loft'" class="summary">
         <div class="stat"><span>图纸页数</span><b>{{ sheets.length }} 页</b></div>
         <div class="stat"><span>裁片类型</span><b>{{ full.panels.panels.length }} 种 / {{ full.panels.totalQty }} 块</b></div>
@@ -292,7 +306,8 @@ function today(): string {
           </text>
           <text class="hdr-sub" :x="s.contentX" y="10.4">
             蒙面 {{ coveringLabel(lantern.covering) }} · 缝份四边各 {{ lantern.seamAllowanceMm }}mm（已计入裁片尺寸）·
-            {{ styleLabel(lantern.mouthStyle) }}/{{ styleLabel(lantern.bottomStyle) }} · 单位 mm
+            {{ styleLabel(lantern.mouthStyle) }}/{{ styleLabel(lantern.bottomStyle) }} · 单位 mm ·
+            分格版本 第 {{ lantern.cellsRevision }} 版
           </text>
           <text class="hdr-sub" :x="s.contentX + s.contentWMm" y="10.4" text-anchor="end">
             {{ sheetFoot(s) }}
@@ -398,11 +413,16 @@ function today(): string {
               </text>
             </g>
 
-            <!-- 裁片 1:1 -->
+            <!-- 裁片 1:1（按格颜色填色） -->
             <g v-else-if="it.type === 'panel'">
               <g>
                 <text class="panel-cap" :x="asPanel(it).xMm" :y="asPanel(it).yMm + 4">
-                  {{ asPanel(it).panel.label }} ×{{ asPanel(it).panel.qty }} 块 ·
+                  {{ asPanel(it).panel.id }} · {{ asPanel(it).panel.label }} ×{{ asPanel(it).panel.qty }} 块
+                  <template v-if="asPanel(it).panel.layerIndex >= 0">
+                    · 第 {{ asPanel(it).panel.cellIndex + 1 }} 格 · 块号
+                    {{ asPanel(it).panel.pieceFrom }}-{{ asPanel(it).panel.pieceTo }}
+                  </template>
+                  · {{ asPanel(it).panel.color }} ·
                   净 {{ f1(asPanel(it).panel.rawWidthTopMm) }}/{{ f1(asPanel(it).panel.rawWidthBottomMm) }}×{{
                     f1(asPanel(it).panel.rawHeightMm)
                   }}mm + 缝份 {{ asPanel(it).panel.seamAllowanceMm }}×2 · 实线=裁切线 虚线=净样 十字=对位
@@ -413,13 +433,17 @@ function today(): string {
                   :cx="panelBox(asPanel(it)).x + panelBox(asPanel(it)).w / 2"
                   :cy="panelBox(asPanel(it)).y + panelBox(asPanel(it)).h / 2"
                   :r="panelBox(asPanel(it)).w / 2"
-                  class="cut-area"
+                  :fill="cellFill(asPanel(it).panel, 0.4)"
+                  stroke="#b3241f"
+                  :stroke-width="0.5"
                 />
                 <polygon
                   v-else
                   :points="cutPoints(asPanel(it).panel, panelBox(asPanel(it)).w, panelBox(asPanel(it)).h)"
                   :transform="`translate(${panelBox(asPanel(it)).x} ${panelBox(asPanel(it)).y})`"
-                  class="cut-area"
+                  :fill="cellFill(asPanel(it).panel, 0.4)"
+                  stroke="#b3241f"
+                  :stroke-width="0.5"
                 />
 
                 <circle
@@ -633,7 +657,14 @@ function today(): string {
             <div><span>裁切尺寸</span><b>上 {{ f1(p.widthTopMm) }} / 下 {{ f1(p.widthBottomMm) }} × 高 {{ f1(p.heightMm) }} mm</b></div>
             <div><span>缝份</span><b>四边各 {{ p.seamAllowanceMm }}mm（已计入裁切尺寸）</b></div>
             <div>
-              <span>位置 / 配色</span><b>{{ p.layerIndex >= 0 ? `第 ${p.layerIndex + 1} 层` : '顶/底盖' }} · {{ p.color }}</b>
+              <span>位置 / 配色</span>
+              <b>
+                <template v-if="p.layerIndex >= 0">
+                  第 {{ p.layerIndex + 1 }} 层 · 第 {{ p.cellIndex + 1 }} 格 · 块号 {{ p.pieceFrom }}-{{ p.pieceTo }} ·
+                </template>
+                <template v-else>顶/底盖（不分格） · </template>
+                {{ p.color }}
+              </b>
             </div>
             <div><span>对位标记</span><b>{{ p.marksMm.length }} 处（见 1:1 图十字编号）</b></div>
           </div>
@@ -648,7 +679,7 @@ function today(): string {
     <ChecksPanel
       v-if="full && mode === 'loft'"
       class="no-print"
-      :checks="full.checks.filter((c) => ['CHK-05', 'CHK-06', 'CHK-08'].includes(c.id))"
+      :checks="full.checks.filter((c) => ['CHK-05', 'CHK-06', 'CHK-08', 'CHK-09'].includes(c.id))"
       :elapsed-ms="full.elapsedMs"
       title="放样与分页自检"
     />

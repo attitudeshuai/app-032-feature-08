@@ -7,6 +7,11 @@ export type PageSize = 'A4' | 'A3'
 export type PanelShape = 'trapezoid' | 'rectangle' | 'sector' | 'circle' | 'triangle'
 export type MemberKind = 'vertical' | 'ring' | 'mouth_ring' | 'base_ring' | 'rib' | 'spoke'
 
+/** 圆周分格方式：整块一色 / 一块一格 / 按角度均分 / 自定义各组块数 */
+export type CellMode = 'whole' | 'perPiece' | 'equal' | 'custom'
+/** 除不尽时余数的去处：并进最后一格（格数不多不少）/ 余数单独成一格（各常规格块数相同） */
+export type RemainderRule = 'last' | 'extra'
+
 export interface Point2 {
   x: number
   y: number
@@ -16,6 +21,31 @@ export interface Point2 {
 export interface LayerSpec {
   heightMm: number
   diameterMm: number
+}
+
+/** 分格颜色条目 */
+export interface CellColorSpec {
+  color: string
+  /** custom 方式下该格分得的裁片块数；其它方式由算法填入，编辑界面只读 */
+  pieces: number
+}
+
+/** 一层的圆周分格（沿圆周顺序排格，第 1 格从该层 1 号棱/0° 基准起，顺时针） */
+export interface LayerCellsSpec {
+  mode: CellMode
+  /** equal 方式下想分的格数（whole=1、perPiece=块数 N、custom=cells.length） */
+  cellCount: number
+  /** 除不尽时余数的去处（whole/perPiece 整除时无影响） */
+  remainder: RemainderRule
+  /** 各格颜色（custom 时 pieces 为手工块数）；长度不足按主色补齐 */
+  cells: CellColorSpec[]
+}
+
+/** 作废留痕 */
+export interface VoidedRevision {
+  revision: number
+  reason: string
+  at: string
 }
 
 export interface Lantern {
@@ -51,8 +81,19 @@ export interface Lantern {
   seamAllowanceMm: number
   /** 绑扎余量（mm，每端） */
   lashAllowanceMm: number
-  /** 每层配色（长度 = layers.length，可短于层数则回落到主色） */
+  /** 每层配色（长度 = layers.length，可短于层数则回落到主色）
+   *  兼容字段：现由 layerCells 派生同步（每层第 1 格颜色），新代码请使用 layerCells */
   layerColors: string[]
+  /** 每层圆周分格（长度 = layers.length；多面体/顶盖底盖不按圆周分格）。
+   *  这是「同一套分格」在本机存档里的唯一源，裁片/图纸/备料/导出全部由它算出 */
+  layerCells: LayerCellsSpec[]
+  /** 分格版本（每次分格的格数或颜色改动都 +1）；用于识别已导出单子是否过期 */
+  cellsRevision: number
+  /** 已按哪一版分格导出过（裁片清单/配色清单/备料单） */
+  exportedRevision?: number
+  exportedAt?: string
+  /** 已作废的分格版本（挑错后旧档/旧单/旧图纸作废留痕） */
+  voidedRevisions: VoidedRevision[]
   /** 主色 */
   color: string
   /** 批量制灯数量 */
@@ -118,6 +159,15 @@ export interface Panel {
   polySides?: number
   /** 对应灯体层的索引（-1 表示顶/底盖） */
   layerIndex: number
+  /** 圆周分格序号（0 起；顶/底盖为 -1） */
+  cellIndex: number
+  /** 该格在本层的分格方式 */
+  cellMode: CellMode
+  /** 本层该格覆盖的块序号范围（1 起，绕圈排列） */
+  pieceFrom: number
+  pieceTo: number
+  /** 本层裁片总块数 */
+  layerPieceCount: number
   color: string
   note?: string
 }

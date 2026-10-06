@@ -2,12 +2,12 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ChecksPanel from '../components/ChecksPanel.vue'
-import { getLantern } from '../core/store'
+import { cellsExportStale, getLantern, markCellsExported, voidExportedCells } from '../core/store'
 import { computeAll } from '../core/checks'
 import { DEFAULT_LOFT_OPTIONS } from '../core/paginate'
 import { downloadText, materialsCsv } from '../core/exporter'
 import { coveringSpec, CRAFT } from '../core/craft'
-import { panelCutArea } from '../core/panels'
+import { cellFabricRows, cellFabricTotals } from '../core/materials'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,29 +20,26 @@ const full = computed(() => {
 
 const cov = computed(() => (lantern.value ? coveringSpec(lantern.value.covering) : null))
 
-const layerFabric = computed(() => {
-  const l = lantern.value
-  if (!l || !full.value) return []
-  return l.layers.map((ly, i) => {
-    const ps = full.value!.panels.panels.filter((p) => p.layerIndex === i)
-    const area = ps.reduce((s, p) => s + panelCutArea(p) * p.qty, 0)
-    return {
-      i: i + 1,
-      color: l.layerColors[i] || l.color,
-      height: ly.heightMm,
-      diameter: ly.diameterMm,
-      kinds: ps.length,
-      perPiece: ps.length ? panelCutArea(ps[0]) : 0,
-      qty: ps.reduce((s, p) => s + p.qty, 0),
-      areaM2: area / 1e6
-    }
-  })
-})
+/** 蒙面用量按格拆开（来自同一份分格，与裁片清单/配色清单同源） */
+const cellRows = computed(() => (full.value ? cellFabricRows(full.value.panels) : []))
+const cellTotals = computed(() => cellFabricTotals(cellRows.value))
+const batchK = computed(() => (full.value ? full.value.batch.count * (1 + full.value.batch.wasteRatio) : 1))
+const stale = computed(() => (lantern.value ? cellsExportStale(lantern.value) : false))
+const cellsValid = computed(() => full.value?.panels.cells.valid ?? false)
 
 function exportCsv() {
   const l = lantern.value
-  if (!l || !full.value) return
-  downloadText(`${l.name}-备料单.csv`, materialsCsv(l, full.value.materials, full.value.batch))
+  if (!l || !full.value || !cellsValid.value) return
+  downloadText(`${l.name}-备料单.csv`, materialsCsv(l, full.value.materials, full.value.batch, cellRows.value))
+  markCellsExported(l)
+}
+
+function doVoid() {
+  const l = lantern.value
+  if (!l) return
+  const reason = window.prompt('把旧版分格与已发出的备料单/裁片清单/图纸作废（已照旧配色裁好的布块需重裁），请写作废原因：', '分法取舍选错，旧版作废')
+  if (reason === null) return
+  voidExportedCells(l, reason)
 }
 </script>
 
@@ -58,8 +55,25 @@ function exportCsv() {
         </p>
       </div>
       <div class="ops">
-        <button @click="exportCsv">导出备料单 CSV</button>
+        <button :disabled="!cellsValid" @click="exportCsv">导出备料单 CSV</button>
         <button class="primary" @click="router.push(`/print/${lantern.id}?view=frame`)">打印备料 / 清单</button>
+      </div>
+    </section>
+
+    <!-- 分格版本 / 作废 -->
+    <section class="rev">
+      <div>
+        <span class="tag">分格第 {{ lantern.cellsRevision }} 版</span>
+        <span v-if="stale" class="bad">
+          ⚠ 备料单基于第 {{ lantern.exportedRevision }} 版分格，存档已是第 {{ lantern.cellsRevision }} 版：旧备料单、裁片清单与图纸作废重出，已照旧配色裁好的布块需重裁。
+        </span>
+        <span v-else-if="lantern.exportedRevision" class="ok">已按第 {{ lantern.exportedRevision }} 版导出（{{ lantern.exportedAt }}）</span>
+        <span v-else class="muted">尚未导出；改格数或颜色版本 +1。</span>
+        <button v-if="stale || lantern.exportedRevision" class="danger" @click="doVoid">登记作废并重出</button>
+      </div>
+      <div v-if="lantern.voidedRevisions.length" class="void-list">
+        <b>已作废：</b>
+        <span v-for="(v, i) in lantern.voidedRevisions" :key="i">第 {{ v.revision }} 版（{{ v.reason }}）；</span>
       </div>
     </section>
 
@@ -135,33 +149,41 @@ function exportCsv() {
     </section>
 
     <section class="palette">
-      <h3>分层蒙面用量（按层买布/买纸用）</h3>
+      <h3>蒙面用量按格拆开（与裁片清单、配色清单同一套分格 · 第 {{ lantern.cellsRevision }} 版）</h3>
+      <p class="unit-note">面积单位 m²：单块四位小数、合计三位小数；块数为整数。批量 = 单灯 × {{ full.batch.count }} × (1+{{ (full.batch.wasteRatio * 100).toFixed(0) }}%)。</p>
       <table>
         <thead>
           <tr>
-            <th>层</th>
+            <th>层 · 格</th>
             <th>颜色</th>
-            <th class="num">分段高 (mm)</th>
-            <th class="num">该层直径 (mm)</th>
-            <th class="num">裁片种类</th>
-            <th class="num">每块面积 (m²)</th>
             <th class="num">块数</th>
-            <th class="num">合计面积 (m²)</th>
+            <th class="num">单块面积 (m²)</th>
+            <th class="num">单灯蒙面 (m²)</th>
+            <th class="num">批量蒙面 (m²)</th>
+            <th>说明</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in layerFabric" :key="r.i">
-            <td class="mono">第 {{ r.i }} 层</td>
+          <tr v-for="(r, i) in cellRows" :key="i" :class="{ cover: r.isCover }">
+            <td class="mono">{{ r.label }}</td>
             <td>
               <span class="dot" :style="{ background: r.color }" />
               <span class="mono">{{ r.color }}</span>
             </td>
-            <td class="num mono">{{ r.height.toFixed(1) }}</td>
-            <td class="num mono">{{ r.diameter.toFixed(1) }}</td>
-            <td class="num mono">{{ r.kinds }}</td>
-            <td class="num mono">{{ (r.perPiece / 1e6).toFixed(4) }}</td>
-            <td class="num mono">{{ r.qty }}</td>
-            <td class="num mono">{{ r.areaM2.toFixed(3) }}</td>
+            <td class="num mono">{{ r.pieces }}</td>
+            <td class="num mono">{{ r.perPieceM2.toFixed(4) }}</td>
+            <td class="num mono strong">{{ r.cutAreaM2.toFixed(3) }}</td>
+            <td class="num mono strong">{{ (r.cutAreaM2 * batchK).toFixed(3) }}</td>
+            <td class="muted">{{ r.reason }}</td>
+          </tr>
+          <tr class="sum-row">
+            <td>各格合计（须 = 蒙面含缝份总量）</td>
+            <td></td>
+            <td class="num mono">{{ cellTotals.pieces }}</td>
+            <td></td>
+            <td class="num mono strong">{{ cellTotals.cutM2.toFixed(3) }}</td>
+            <td class="num mono strong">{{ (cellTotals.cutM2 * batchK).toFixed(3) }}</td>
+            <td></td>
           </tr>
         </tbody>
       </table>
@@ -231,6 +253,57 @@ button.primary {
 button.primary:hover {
   background: #9c1f1b;
   color: #fff;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.danger {
+  border-color: #b3241f;
+  color: #b3241f;
+  background: #fff;
+  margin-left: 10px;
+}
+
+.rev {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--gold, #b8891f);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tag {
+  display: inline-block;
+  background: #f6e3ba;
+  color: #8f1c19;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 8px;
+  margin-right: 8px;
+}
+
+.ok {
+  color: var(--jade);
+}
+
+.bad {
+  color: #b3241f;
+}
+
+.muted {
+  color: var(--ink-soft);
+}
+
+.void-list {
+  font-size: 12px;
+  color: #6a5c52;
 }
 
 .batch {
@@ -396,6 +469,21 @@ tr.led td {
 .palette h3 {
   margin: 0 0 8px;
   font-size: 14px;
+}
+
+.unit-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.palette tr.cover td {
+  background: #faf6ec;
+}
+
+.palette tr.sum-row td {
+  background: var(--surface-2);
+  font-weight: 700;
 }
 
 .dot {

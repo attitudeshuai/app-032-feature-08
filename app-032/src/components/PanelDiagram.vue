@@ -1,9 +1,19 @@
 <script setup lang="ts">
-/** 裁片图：实线为裁切线，虚线为净样（缝份折线），标注尺寸与对位标记 */
+/** 裁片图：实线为裁切线，按格颜色填色（颜色来自同一份分格），虚线为净样（缝份折线），标注尺寸与对位标记 */
 import { computed } from 'vue'
 import type { Panel } from '../core/types'
 
 const props = defineProps<{ panel: Panel; showMarks?: boolean; showDims?: boolean }>()
+
+/** 填色：直接采用分格算出的该格颜色，与裁片清单/配色清单/备料处同一来源 */
+const fillColor = computed(() => props.panel.color)
+const fill = computed(() => {
+  const hex = fillColor.value.replace('#', '')
+  const r = parseInt(hex.slice(0, 2), 16) || 0
+  const g = parseInt(hex.slice(2, 4), 16) || 0
+  const b = parseInt(hex.slice(4, 6), 16) || 0
+  return `rgba(${r},${g},${b},0.42)`
+})
 
 const cutW = computed(() => Math.max(props.panel.widthTopMm, props.panel.widthBottomMm))
 const cutH = computed(() => props.panel.heightMm)
@@ -68,11 +78,11 @@ const markList = computed(() =>
 
 <template>
   <svg class="panel-svg" :viewBox="viewBox" preserveAspectRatio="xMidYMid meet">
-    <!-- 裁切线 -->
+    <!-- 裁切线（按格颜色填色） -->
     <polygon
       v-if="panel.shape !== 'circle' || panel.polySides"
       :points="cutPoints"
-      fill="rgba(179,36,31,0.06)"
+      :fill="fill"
       stroke="#b3241f"
       :stroke-width="sw * 1.6"
     />
@@ -81,7 +91,7 @@ const markList = computed(() =>
       :cx="cutW / 2"
       :cy="cutH / 2"
       :r="cutW / 2"
-      fill="rgba(179,36,31,0.06)"
+      :fill="fill"
       stroke="#b3241f"
       :stroke-width="sw * 1.6"
     />
@@ -141,7 +151,8 @@ const markList = computed(() =>
     </g>
 
     <text :x="cutW / 2" :y="cutH / 2 + fs * 0.5" text-anchor="middle" :font-size="fs * 1.05" class="net-label">
-      净 {{ panel.rawWidthTopMm.toFixed(1) }}×{{ panel.rawHeightMm.toFixed(1) }} + 缝份
+      <tspan v-if="panel.layerIndex >= 0">{{ panel.cellIndex + 1 }}格 · 块{{ panel.pieceFrom }}-{{ panel.pieceTo }} · </tspan>
+      {{ fillColor }} · 净 {{ panel.rawWidthTopMm.toFixed(1) }}×{{ panel.rawHeightMm.toFixed(1) }} + 缝份
       {{ panel.seamAllowanceMm }}×2
     </text>
   </svg>
