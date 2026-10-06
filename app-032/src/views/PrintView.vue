@@ -22,6 +22,7 @@ import {
 } from '../core/paginate'
 import { groupMembers } from '../core/frame'
 import { kindName, shapeName } from '../core/exporter'
+import { fmtBlockRange } from '../core/segments'
 import { coveringLabel, kindLabel, styleLabel } from '../core/craft'
 import type { Panel } from '../core/types'
 
@@ -414,12 +415,16 @@ function today(): string {
                   :cy="panelBox(asPanel(it)).y + panelBox(asPanel(it)).h / 2"
                   :r="panelBox(asPanel(it)).w / 2"
                   class="cut-area"
+                  :fill="asPanel(it).panel.color"
+                  fill-opacity="0.14"
                 />
                 <polygon
                   v-else
                   :points="cutPoints(asPanel(it).panel, panelBox(asPanel(it)).w, panelBox(asPanel(it)).h)"
                   :transform="`translate(${panelBox(asPanel(it)).x} ${panelBox(asPanel(it)).y})`"
                   class="cut-area"
+                  :fill="asPanel(it).panel.color"
+                  fill-opacity="0.14"
                 />
 
                 <circle
@@ -633,7 +638,10 @@ function today(): string {
             <div><span>裁切尺寸</span><b>上 {{ f1(p.widthTopMm) }} / 下 {{ f1(p.widthBottomMm) }} × 高 {{ f1(p.heightMm) }} mm</b></div>
             <div><span>缝份</span><b>四边各 {{ p.seamAllowanceMm }}mm（已计入裁切尺寸）</b></div>
             <div>
-              <span>位置 / 配色</span><b>{{ p.layerIndex >= 0 ? `第 ${p.layerIndex + 1} 层` : '顶/底盖' }} · {{ p.color }}</b>
+              <span>位置 / 配色</span><b>{{ p.layerIndex >= 0 ? `第 ${p.layerIndex + 1} 层 · 第 ${(p.segmentIndex ?? 0) + 1}/${p.segmentCount ?? 1} 格` : '顶/底盖' }} · {{ p.color }}</b>
+            </div>
+            <div v-if="p.layerIndex >= 0 && (p.segmentCount ?? 1) > 1">
+              <span>绕圈块号</span><b>第 {{ fmtBlockRange(p.segmentFrom ?? 1, p.segmentTo ?? p.qty) }} 块（共 {{ p.qty }} 块）</b>
             </div>
             <div><span>对位标记</span><b>{{ p.marksMm.length }} 处（见 1:1 图十字编号）</b></div>
           </div>
@@ -870,7 +878,6 @@ button.primary:hover {
 }
 
 .cut-area {
-  fill: rgba(179, 36, 31, 0.06);
   stroke: #b3241f;
   stroke-width: 0.5;
 }

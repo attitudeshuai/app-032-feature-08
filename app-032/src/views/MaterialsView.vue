@@ -7,7 +7,8 @@ import { computeAll } from '../core/checks'
 import { DEFAULT_LOFT_OPTIONS } from '../core/paginate'
 import { downloadText, materialsCsv } from '../core/exporter'
 import { coveringSpec, CRAFT } from '../core/craft'
-import { panelCutArea } from '../core/panels'
+import { segmentFabricRows } from '../core/materials'
+import { fmtBlockRange } from '../core/segments'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,29 +21,26 @@ const full = computed(() => {
 
 const cov = computed(() => (lantern.value ? coveringSpec(lantern.value.covering) : null))
 
-const layerFabric = computed(() => {
+/** 分格蒙面用量：与裁片清单/配色清单同一份分格；面积含缝份，m² 留三位小数 */
+const segmentRows = computed(() => {
   const l = lantern.value
   if (!l || !full.value) return []
-  return l.layers.map((ly, i) => {
-    const ps = full.value!.panels.panels.filter((p) => p.layerIndex === i)
-    const area = ps.reduce((s, p) => s + panelCutArea(p) * p.qty, 0)
-    return {
-      i: i + 1,
-      color: l.layerColors[i] || l.color,
-      height: ly.heightMm,
-      diameter: ly.diameterMm,
-      kinds: ps.length,
-      perPiece: ps.length ? panelCutArea(ps[0]) : 0,
-      qty: ps.reduce((s, p) => s + p.qty, 0),
-      areaM2: area / 1e6
-    }
-  })
+  return segmentFabricRows(l, full.value.panels.panels)
+})
+
+const batchK = computed(() => {
+  const l = lantern.value
+  if (!l) return 1
+  return Math.max(1, Math.round(l.batchCount)) * (1 + l.wasteRatio)
 })
 
 function exportCsv() {
   const l = lantern.value
   if (!l || !full.value) return
-  downloadText(`${l.name}-备料单.csv`, materialsCsv(l, full.value.materials, full.value.batch))
+  downloadText(
+    `${l.name}-备料单.csv`,
+    materialsCsv(l, full.value.materials, full.value.batch, segmentRows.value)
+  )
 }
 </script>
 
@@ -135,36 +133,44 @@ function exportCsv() {
     </section>
 
     <section class="palette">
-      <h3>分层蒙面用量（按层买布/买纸用）</h3>
+      <h3>分格蒙面用量（按格买布/买纸用；面积含缝份，单位 m² 留三位小数，块数为整数）</h3>
       <table>
         <thead>
           <tr>
             <th>层</th>
+            <th>格</th>
             <th>颜色</th>
-            <th class="num">分段高 (mm)</th>
-            <th class="num">该层直径 (mm)</th>
-            <th class="num">裁片种类</th>
-            <th class="num">每块面积 (m²)</th>
-            <th class="num">块数</th>
-            <th class="num">合计面积 (m²)</th>
+            <th>分法</th>
+            <th class="num">块数（块）</th>
+            <th class="num">绕圈块序号</th>
+            <th class="num">单灯面积 (m²)</th>
+            <th class="num">批量面积 (m²) ×{{ full.batch.count }} 含损耗</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in layerFabric" :key="r.i">
-            <td class="mono">第 {{ r.i }} 层</td>
+          <tr v-for="(r, ri) in segmentRows" :key="ri">
+            <td class="mono">{{ r.layerIndex >= 0 ? `第 ${r.layerIndex + 1} 层` : '顶/底盖' }}</td>
+            <td class="mono">{{ r.layerIndex >= 0 ? `第 ${r.segmentIndex + 1}/${r.segmentCount} 格` : '整片' }}</td>
             <td>
               <span class="dot" :style="{ background: r.color }" />
               <span class="mono">{{ r.color }}</span>
             </td>
-            <td class="num mono">{{ r.height.toFixed(1) }}</td>
-            <td class="num mono">{{ r.diameter.toFixed(1) }}</td>
-            <td class="num mono">{{ r.kinds }}</td>
-            <td class="num mono">{{ (r.perPiece / 1e6).toFixed(4) }}</td>
+            <td class="mono">{{ r.methodLabel }}</td>
             <td class="num mono">{{ r.qty }}</td>
-            <td class="num mono">{{ r.areaM2.toFixed(3) }}</td>
+            <td class="num mono">{{ r.layerIndex >= 0 ? fmtBlockRange(r.from, r.to) : '—' }}</td>
+            <td class="num mono">{{ (r.areaMm2 / 1e6).toFixed(3) }}</td>
+            <td class="num mono">{{ ((r.areaMm2 / 1e6) * batchK).toFixed(3) }}</td>
+          </tr>
+          <tr class="sum">
+            <td class="mono" colspan="4">合计（= 蒙面总量，含缝份）</td>
+            <td class="num mono">{{ segmentRows.reduce((a, r) => a + r.qty, 0) }}</td>
+            <td class="num mono">—</td>
+            <td class="num mono strong">{{ full.materials.coveringM2.toFixed(3) }}</td>
+            <td class="num mono strong">{{ full.batch.coveringM2.toFixed(3) }}</td>
           </tr>
         </tbody>
       </table>
+      <p class="hint">按格行 = 单格面积 × 批量系数（{{ full.batch.count }} × {{ (1 + lantern.wasteRatio).toFixed(2) }}），各自保留三位小数；合计行以蒙面总量为准，分行求和可能有 ±0.001 的舍入差。</p>
     </section>
 
     <ChecksPanel :checks="full.checks" :elapsed-ms="full.elapsedMs" title="全量验收自检（§10）" />
@@ -396,6 +402,18 @@ tr.led td {
 .palette h3 {
   margin: 0 0 8px;
   font-size: 14px;
+}
+
+.palette .hint {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+
+tr.sum td {
+  border-top: 1px solid var(--line-strong);
+  border-bottom: none;
+  background: var(--surface-2);
 }
 
 .dot {

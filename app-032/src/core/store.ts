@@ -60,6 +60,7 @@ export function createFromPreset(presetId: string): Lantern {
     seamAllowanceMm: CRAFT.defaultSeamAllowanceMm,
     lashAllowanceMm: CRAFT.defaultLashAllowanceMm,
     layerColors: [...p.layerColors],
+    layerSegments: Array.from({ length: count }, () => null),
     color: p.color,
     batchCount: 20,
     wasteRatio: coveringSpec(p.covering).wasteRatio,
@@ -91,6 +92,10 @@ export function distributeLayers(l: Lantern) {
   l.layers[count - 1].heightMm = r1v(l.layers[count - 1].heightMm + (l.totalHeightMm - sum))
   while (l.layerColors.length < count) l.layerColors.push(l.color)
   l.layerColors = l.layerColors.slice(0, count)
+  // 圆周分格与层对齐：新增层默认未分格，被裁掉的层分格一并去掉
+  const segs = l.layerSegments ?? []
+  while (segs.length < count) segs.push(null)
+  l.layerSegments = segs.slice(0, count)
   syncLayerDiameters(l)
 }
 

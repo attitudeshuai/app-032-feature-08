@@ -1,6 +1,8 @@
-/** 导出：构件清单 / 裁片清单 / 备料单（CSV，本地生成，无外部请求） */
+/** 导出：构件清单 / 裁片清单 / 配色清单 / 备料单（CSV，本地生成，无外部请求） */
 import type { FrameMember, Lantern, Panel } from './types'
 import type { BatchMaterials, SingleLightMaterials } from './materials'
+import type { SegmentFabricRow, SegmentPlan } from './segments'
+import { fmtBlockRange } from './segments'
 import { coveringSpec } from './craft'
 
 function csvCell(v: string | number): string {
@@ -56,14 +58,18 @@ export function membersCsv(l: Lantern, members: FrameMember[]): string {
 export function panelsCsv(l: Lantern, panels: Panel[]): string {
   const rows: (string | number)[][] = [
     [`蒙面裁片清单 · ${l.name}`],
-    [`蒙面 ${coveringSpec(l.covering).name} / 缝份 每边 ${l.seamAllowanceMm}mm（已含在裁片尺寸内）/ 生成 ${new Date().toLocaleString()}`],
+    [`蒙面 ${coveringSpec(l.covering).name} / 缝份 每边 ${l.seamAllowanceMm}mm（已含在裁片尺寸内）/ 尺寸单位 mm（1 位小数），块数为整数 / 生成 ${new Date().toLocaleString()}`],
     [],
-    ['裁片编号', '名称', '形状', '净上宽(mm)', '净下宽(mm)', '净高(mm)', '裁切上宽(mm)', '裁切下宽(mm)', '裁切高(mm)', '半径/对边(mm)', '数量', '对位标记数']
+    ['裁片编号', '名称', '层', '格', '颜色', '绕圈块序号', '形状', '净上宽(mm)', '净下宽(mm)', '净高(mm)', '裁切上宽(mm)', '裁切下宽(mm)', '裁切高(mm)', '半径/对边(mm)', '数量(块)', '对位标记数']
   ]
   for (const p of panels) {
     rows.push([
       p.id,
       p.label,
+      p.layerIndex >= 0 ? `第 ${p.layerIndex + 1} 层` : '顶/底盖',
+      p.layerIndex >= 0 ? `第 ${(p.segmentIndex ?? 0) + 1}/${p.segmentCount ?? 1} 格` : '—',
+      p.color,
+      p.layerIndex >= 0 ? fmtBlockRange(p.segmentFrom ?? 1, p.segmentTo ?? p.qty) : '—',
       shapeName(p.shape),
       p.rawWidthTopMm.toFixed(1),
       p.rawWidthBottomMm.toFixed(1),
@@ -79,15 +85,50 @@ export function panelsCsv(l: Lantern, panels: Panel[]): string {
   return toCsv(rows)
 }
 
+/** 配色清单：每一层每一格一行，与裁片清单、备料单由同一份分格方案算出 */
+export function paletteCsv(l: Lantern, plans: SegmentPlan[]): string {
+  const rows: (string | number)[][] = [
+    [`配色清单（圆周分格） · ${l.name}`],
+    [`块数为整数，绕圈块序号从 1 起 / 各格块数合计 = 该层裁片总数 / 生成 ${new Date().toLocaleString()}`],
+    [],
+    ['层', '格', '颜色', '该格块数(块)', '绕圈块序号', '分法', '余数取舍与说明']
+  ]
+  for (const plan of plans) {
+    if (plan.panelCount <= 0) continue
+    for (let s = 0; s < plan.actual; s++) {
+      rows.push([
+        `第 ${plan.layerIndex + 1} 层`,
+        `第 ${s + 1}/${plan.actual} 格`,
+        plan.colors[s],
+        plan.counts[s],
+        fmtBlockRange(plan.starts[s] + 1, plan.starts[s] + plan.counts[s]),
+        plan.methodLabel,
+        s === 0 ? [plan.note, plan.cost].filter(Boolean).join('；') : ''
+      ])
+    }
+    rows.push([
+      `第 ${plan.layerIndex + 1} 层合计`,
+      `${plan.actual} 格`,
+      '',
+      plan.panelCount,
+      `1–${plan.panelCount}`,
+      '',
+      `各格块数合计 ${plan.counts.reduce((a, b) => a + b, 0)} = 该层裁片总数 ${plan.panelCount}`
+    ])
+  }
+  return toCsv(rows)
+}
+
 export function materialsCsv(
   l: Lantern,
   single: SingleLightMaterials,
-  batch: BatchMaterials
+  batch: BatchMaterials,
+  segmentRows?: SegmentFabricRow[]
 ): string {
   const cov = coveringSpec(l.covering)
   const rows: (string | number)[][] = [
     [`备料单 · ${l.name}`],
-    [`生成 ${new Date().toLocaleString()} / 单位 mm·m²·m·g`],
+    [`生成 ${new Date().toLocaleString()} / 单位 mm·m²·m·g；面积折平方米留三位小数，块数为整数`],
     [],
     ['项目', '单灯用量', '单位', `批量 ${batch.count} 个（含 ${(batch.wasteRatio * 100).toFixed(0)}% 损耗）`],
     ['竹篾/铁丝（含绑扎余量）', single.frameM.toFixed(3), 'm', batch.frameM.toFixed(3)],
@@ -101,6 +142,25 @@ export function materialsCsv(
     ['灯体体积', single.volumeL.toFixed(3), 'L', batch.volumeL.toFixed(3)],
     ['灯体表面积', single.surfaceM2.toFixed(3), 'm²', batch.surfaceM2.toFixed(3)]
   ]
+  if (segmentRows && segmentRows.length) {
+    const k = batch.count * (1 + batch.wasteRatio)
+    rows.push([])
+    rows.push([`分格蒙面用量（按格拆开，与裁片清单/配色清单同一份分格；面积含缝份，m² 留三位小数）`])
+    rows.push(['层', '格', '颜色', '块数(块)', '绕圈块序号', '单灯面积(m²)', `批量面积(m²) ×${batch.count}含损耗`])
+    for (const r of segmentRows) {
+      rows.push([
+        r.layerIndex >= 0 ? `第 ${r.layerIndex + 1} 层` : '顶/底盖',
+        r.layerIndex >= 0 ? `第 ${r.segmentIndex + 1}/${r.segmentCount} 格` : '整片',
+        r.color,
+        r.qty,
+        r.layerIndex >= 0 ? fmtBlockRange(r.from, r.to) : '—',
+        (r.areaMm2 / 1e6).toFixed(3),
+        ((r.areaMm2 / 1e6) * k).toFixed(3)
+      ])
+    }
+    rows.push(['合计', '', '', segmentRows.reduce((a, r) => a + r.qty, 0), '', single.coveringM2.toFixed(3), batch.coveringM2.toFixed(3)])
+    rows.push(['注：按格行为单格面积 × 批量系数，合计行以蒙面总量为准（分格行各自保留三位小数，求和可能有 ±0.001 的舍入差）'])
+  }
   return toCsv(rows)
 }
 

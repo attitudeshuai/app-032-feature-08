@@ -2,10 +2,11 @@
  * 材料统计与备料单（规格书 §4.6 / §5）
  * 备料按含余量长度；批量 = 单灯 × N × (1 + 损耗率)。
  */
-import type { FrameMember, Lantern } from './types'
+import type { FrameMember, Lantern, Panel } from './types'
 import { bodySurfaceArea, bodyVolume, r1, r3 } from './geometry'
 import { buildFrame } from './frame'
-import { buildPanels } from './panels'
+import { buildPanels, panelCutArea } from './panels'
+import { computeLayerPlans, type SegmentFabricRow } from './segments'
 import { CRAFT, coveringSpec } from './craft'
 
 export interface SingleLightMaterials {
@@ -80,4 +81,47 @@ export function computeBatch(single: SingleLightMaterials, count: number, wasteR
     ledCount: single.ledCount * count,
     surfaceM2: r3(single.surfaceM2 * count)
   }
+}
+
+/**
+ * 蒙面用量按格拆开（单灯）：每一层每一格一行，顶/底盖各一行（整片、不参与分格），
+ * 面积含缝份。与裁片清单同源 —— 直接由 buildPanels 的裁片（已按格拆分）汇总，
+ * 批量行 = 单格面积 × 数量 × (1 + 损耗率)，展示统一折 m² 留三位小数。
+ */
+export function segmentFabricRows(l: Lantern, panels?: Panel[]): SegmentFabricRow[] {
+  const list = panels ?? buildPanels(l).panels
+  const plans = computeLayerPlans(l)
+  const rows: SegmentFabricRow[] = []
+  for (const plan of plans) {
+    if (plan.panelCount <= 0) continue
+    for (let s = 0; s < plan.actual; s++) {
+      const p = list.find((x) => x.layerIndex === plan.layerIndex && (x.segmentIndex ?? 0) === s)
+      rows.push({
+        layerIndex: plan.layerIndex,
+        segmentIndex: s,
+        segmentCount: plan.actual,
+        color: plan.colors[s],
+        qty: plan.counts[s],
+        from: plan.starts[s] + 1,
+        to: plan.starts[s] + plan.counts[s],
+        methodLabel: plan.methodLabel,
+        areaMm2: p ? panelCutArea(p) * p.qty : 0
+      })
+    }
+  }
+  // 顶/底盖：整片一行，不参与圆周分格
+  for (const p of list.filter((x) => x.layerIndex < 0)) {
+    rows.push({
+      layerIndex: -1,
+      segmentIndex: 0,
+      segmentCount: 1,
+      color: p.color,
+      qty: p.qty,
+      from: 1,
+      to: p.qty,
+      methodLabel: `${p.label} · 整片（不分格）`,
+      areaMm2: panelCutArea(p) * p.qty
+    })
+  }
+  return rows
 }

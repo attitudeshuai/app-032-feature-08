@@ -13,6 +13,7 @@ import {
   TAU,
   type Geometry
 } from './geometry'
+import { computeLayerPlans, fmtBlockRange } from './segments'
 
 export interface PanelResult {
   geometry: Geometry
@@ -111,9 +112,11 @@ export function buildPanels(l: Lantern): PanelResult {
 
   const segs = segmentInfos(g)
   const divisions = Math.max(3, Math.round(l.divisions))
+  // 圆周分格：每一层的裁片按格拆开（同一份分格方案，全应用共用）
+  const plans = computeLayerPlans(l)
 
   segs.forEach((sg, i) => {
-    const color = l.layerColors[i] || l.color
+    const plan = plans[i]
     const isPolygon = g.polygon
     const rawBottom = isPolygon ? sg.edgeBottomMm : (TAU * sg.r0Mm) / divisions
     const rawTop = isPolygon ? sg.edgeTopMm : (TAU * sg.r1Mm) / divisions
@@ -121,24 +124,37 @@ export function buildPanels(l: Lantern): PanelResult {
     const cutW = Math.max(rawTop, rawBottom) + 2 * s
     const cutH = rawH + 2 * s
     const shape: PanelShape = Math.abs(rawTop - rawBottom) < 0.05 ? 'rectangle' : 'trapezoid'
-    push({
-      shape,
-      label: isPolygon ? `侧面（第 ${i + 1} 层）` : `展开片（第 ${i + 1} 层）`,
-      rawWidthTopMm: r1(rawTop),
-      rawWidthBottomMm: r1(rawBottom),
-      rawHeightMm: r1(rawH),
-      widthTopMm: r1(rawTop + 2 * s),
-      widthBottomMm: r1(rawBottom + 2 * s),
-      heightMm: r1(cutH),
-      seamAllowanceMm: s,
-      marksMm: trapezoidMarks(cutW, cutH, s, `${i + 1}层`),
-      qty: isPolygon ? g.n : divisions,
-      layerIndex: i,
-      color,
-      note: isPolygon
-        ? `上下边各加 ${s}mm 缝份，${g.n} 块围成一圈`
-        : `按 ${divisions} 等分近似展开，每块上下边各加 ${s}mm 缝份`
-    })
+    const baseLabel = isPolygon ? `侧面（第 ${i + 1} 层）` : `展开片（第 ${i + 1} 层）`
+    const baseNote = isPolygon
+      ? `上下边各加 ${s}mm 缝份，${g.n} 块围成一圈`
+      : `按 ${divisions} 等分近似展开，每块上下边各加 ${s}mm 缝份`
+    for (let sIdx = 0; sIdx < plan.actual; sIdx++) {
+      const from = plan.starts[sIdx] + 1
+      const to = from + plan.counts[sIdx] - 1
+      const segmented = plan.actual > 1
+      push({
+        shape,
+        label: segmented ? `${baseLabel.slice(0, -1)} · 第 ${sIdx + 1}/${plan.actual} 格）` : baseLabel,
+        rawWidthTopMm: r1(rawTop),
+        rawWidthBottomMm: r1(rawBottom),
+        rawHeightMm: r1(rawH),
+        widthTopMm: r1(rawTop + 2 * s),
+        widthBottomMm: r1(rawBottom + 2 * s),
+        heightMm: r1(cutH),
+        seamAllowanceMm: s,
+        marksMm: trapezoidMarks(cutW, cutH, s, `${i + 1}层`),
+        qty: plan.counts[sIdx],
+        layerIndex: i,
+        color: plan.colors[sIdx],
+        segmentIndex: sIdx,
+        segmentCount: plan.actual,
+        segmentFrom: from,
+        segmentTo: to,
+        note: segmented
+          ? `${baseNote}；本格为绕圈第 ${fmtBlockRange(from, to)} 块（${plan.methodLabel}）`
+          : baseNote
+      })
+    }
   })
 
   // 顶盖 / 底盖

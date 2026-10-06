@@ -5,8 +5,9 @@
 import type { CheckResult, Lantern } from './types'
 import { bodySurfaceArea, polygonEdge, ringPerimeter, segmentInfos } from './geometry'
 import { buildFrame, type FrameResult } from './frame'
-import { buildPanels, panelNetArea, type PanelResult } from './panels'
-import { computeBatch, computeMaterials, type BatchMaterials, type SingleLightMaterials } from './materials'
+import { buildPanels, panelCutArea, panelNetArea, type PanelResult } from './panels'
+import { computeBatch, computeMaterials, segmentFabricRows, type BatchMaterials, type SingleLightMaterials } from './materials'
+import { computeLayerPlans } from './segments'
 import { assertNoPanelSplit, paginate, type LoftOptions, type Sheet } from './paginate'
 import { CRAFT } from './craft'
 
@@ -188,6 +189,61 @@ function runChecks(
       pass,
       value: `${elapsedMs.toFixed(1)}ms`,
       detail: `${l.divisions} 等分 × ${l.layers.length} 层：构件 ${frame.totalQty} 根、裁片 ${panels.totalQty} 块、图纸 ${sheets.length} 页，全流程耗时 ${elapsedMs.toFixed(1)}ms（含分页）`
+    })
+  }
+
+  // ---- CHK-09 圆周分格一致性（分格方案 vs 裁片清单 vs 配色清单 vs 备料按格面积） ----
+  {
+    const plans = computeLayerPlans(l)
+    const problems: string[] = []
+    let segmentedLayers = 0
+    for (const plan of plans) {
+      if (plan.panelCount <= 0) continue
+      const li = plan.layerIndex + 1
+      const sum = plan.counts.reduce((a, b) => a + b, 0)
+      if (sum !== plan.panelCount) {
+        problems.push(`第 ${li} 层分格方案：各格块数合计 ${sum} ≠ 该层裁片总数 ${plan.panelCount}`)
+      }
+      if (plan.actual > plan.panelCount) {
+        problems.push(`第 ${li} 层分格方案：格数 ${plan.actual} 超过该层块数 ${plan.panelCount}`)
+      }
+      if (plan.actual > 1) segmentedLayers++
+      // 裁片清单（buildPanels 输出）逐格核对块数与颜色
+      const ps = panels.panels.filter((p) => p.layerIndex === plan.layerIndex)
+      const qsum = ps.reduce((a, p) => a + p.qty, 0)
+      if (qsum !== plan.panelCount) {
+        problems.push(`裁片清单第 ${li} 层：块数合计 ${qsum} ≠ 分格方案 ${plan.panelCount}`)
+      }
+      for (let s = 0; s < plan.actual; s++) {
+        const p = ps.find((x) => (x.segmentIndex ?? 0) === s)
+        if (!p) {
+          problems.push(`裁片清单缺第 ${li} 层第 ${s + 1} 格（分格方案有 ${plan.counts[s]} 块）`)
+          continue
+        }
+        if (p.qty !== plan.counts[s]) {
+          problems.push(`第 ${li} 层第 ${s + 1} 格块数对不上：裁片清单 ${p.qty} 块 ≠ 分格方案 ${plan.counts[s]} 块`)
+        }
+        if (p.color.toLowerCase() !== plan.colors[s].toLowerCase()) {
+          problems.push(`颜色对不上：裁片清单第 ${li} 层第 ${s + 1} 格为 ${p.color}，配色清单（分格方案）为 ${plan.colors[s]}`)
+        }
+      }
+    }
+    // 备料按格面积：合计应等于裁片清单总面积（同一批裁片汇总，容差 1mm²）
+    const rows = segmentFabricRows(l, panels.panels)
+    const segArea = rows.reduce((a, r) => a + r.areaMm2, 0)
+    const layerArea = panels.panels.reduce((a, p) => a + panelCutArea(p) * p.qty, 0)
+    if (Math.abs(segArea - layerArea) > 1) {
+      problems.push(`备料按格面积合计 ${(segArea / 1e6).toFixed(3)}m² ≠ 裁片清单总面积 ${(layerArea / 1e6).toFixed(3)}m²`)
+    }
+    out.push({
+      id: 'CHK-09',
+      title: '圆周分格一致：各格块数合计 = 该层块数，裁片清单 / 配色清单 / 备料按格面积同源',
+      pass: problems.length === 0,
+      value: problems.length === 0 ? `${segmentedLayers} 层已分格 / ${plans.length} 层` : `${problems.length} 处对不上`,
+      detail:
+        problems.length === 0
+          ? `${plans.length} 层分格方案全部通过：格数 ≤ 块数、各格块数合计 = 该层裁片总数；裁片清单每一行、配色清单每一行与备料按格面积由同一份分格算出，块数按整数、面积 m² 留三位小数`
+          : problems.join('；')
     })
   }
 

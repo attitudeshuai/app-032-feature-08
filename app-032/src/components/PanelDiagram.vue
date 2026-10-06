@@ -68,11 +68,12 @@ const markList = computed(() =>
 
 <template>
   <svg class="panel-svg" :viewBox="viewBox" preserveAspectRatio="xMidYMid meet">
-    <!-- 裁切线 -->
+    <!-- 裁切线（按格填色：填充色 = 该格颜色） -->
     <polygon
       v-if="panel.shape !== 'circle' || panel.polySides"
       :points="cutPoints"
-      fill="rgba(179,36,31,0.06)"
+      :fill="panel.color"
+      fill-opacity="0.16"
       stroke="#b3241f"
       :stroke-width="sw * 1.6"
     />
@@ -81,7 +82,8 @@ const markList = computed(() =>
       :cx="cutW / 2"
       :cy="cutH / 2"
       :r="cutW / 2"
-      fill="rgba(179,36,31,0.06)"
+      :fill="panel.color"
+      fill-opacity="0.16"
       stroke="#b3241f"
       :stroke-width="sw * 1.6"
     />

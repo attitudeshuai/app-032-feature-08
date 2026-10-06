@@ -285,6 +285,7 @@ function onCtrl(v: { which: 1 | 2; x: number; y: number }) {
         </tbody>
       </table>
       <small class="hint">分段高之和 = 总高 {{ lantern.totalHeightMm }}mm；直径由收口曲线自动推算。</small>
+      <small class="hint">这里定的是每层的底色（未分格时整层用它）；要把一层绕圈分成几格、每格一个颜色，到「蒙面裁片」页的「圆周分格配色」里设。</small>
 
       <h3>批量制灯</h3>
       <div class="row">

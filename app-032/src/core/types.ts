@@ -12,6 +12,19 @@ export interface Point2 {
   y: number
 }
 
+/** 余数取舍：merge-last = 余数并入最后一格；extra = 余数单独成一格 */
+export type RemainderMode = 'merge-last' | 'extra'
+
+/** 一层绕圆周的分格设置（格数 1 = 未分格，整层一色） */
+export interface LayerSegmentSetting {
+  /** 期望格数（会被夹到 1 ~ 该层裁片块数） */
+  count: number
+  /** 各格颜色（长度可短于实际格数，缺色回落到该层配色） */
+  colors: string[]
+  /** 块数除不尽时的取舍 */
+  remainder: RemainderMode
+}
+
 /** 分段（层）：高度为准，直径为轮廓派生结果 */
 export interface LayerSpec {
   heightMm: number
@@ -53,6 +66,8 @@ export interface Lantern {
   lashAllowanceMm: number
   /** 每层配色（长度 = layers.length，可短于层数则回落到主色） */
   layerColors: string[]
+  /** 每层绕圆周的分格（与 layers 对齐；null/缺省 = 未分格，整层一色） */
+  layerSegments?: (LayerSegmentSetting | null)[]
   /** 主色 */
   color: string
   /** 批量制灯数量 */
@@ -119,6 +134,13 @@ export interface Panel {
   /** 对应灯体层的索引（-1 表示顶/底盖） */
   layerIndex: number
   color: string
+  /** 所属格（层内绕圈分格序号，0 起；未分格 = 0） */
+  segmentIndex?: number
+  /** 该层实际格数（未分格 = 1） */
+  segmentCount?: number
+  /** 该格覆盖的裁片序号（绕圈，1 起） */
+  segmentFrom?: number
+  segmentTo?: number
   note?: string
 }
 
